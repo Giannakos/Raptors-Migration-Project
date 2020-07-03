@@ -1,0 +1,1968 @@
+  setwd("D:/Desktop")
+  
+  
+  library(glmmTMB)
+  library(ggplot2);theme_set(theme_bw())
+  library(knitr)
+  library(bbmle)#for AICtab
+  library(reshape)
+  library(plyr)
+  library(tidyr)
+  library(dplyr)
+  
+  library(lubridate)
+  library(hms)
+  library(readxl)
+  library(dplyr)
+  library(ggplot2)
+  library(stringr)
+  library(naniar)
+  library(ggpubr)
+  
+  my_data <- read_excel("HMworkingdatav2.xlsx")
+
+
+#For these rows we can infre that something is wrong because Humidity and BARO which play a crucial role are totally corrupted
+which(my_data$Humidity==0) 
+which(my_data$Humidity>100)
+which(my_data$BARO==0)
+which(my_data$BARO==0.85)
+
+which(which(my_data$Humidity==0 | my_data$Humidity>100) %in% which(my_data$BARO==0)==FALSE)
+
+length(which(my_data$Humidity==0 | my_data$Humidity>100))
+length( which(my_data$BARO==0))
+
+#Discared corrupted BARO and Humidity i.e values 0 and 127
+
+my_data = my_data[-c(which(my_data$Humidity==0) ,
+                     which(my_data$Humidity>100),
+                     which(my_data$BARO==0),which(my_data$BARO==0.85)),]
+
+
+
+
+#Discard Cloud Cover more than 125 precent
+which(my_data$`Cloud Cover`>100)
+
+my_data = my_data[-which(my_data$`Cloud Cover`>100),]
+
+
+#Precipitation discard and safe imputation
+
+my_data$Precipitation2
+
+my_data[which(my_data$Precipitation2=="NA"),]$Date
+
+
+#we have only a single NA for the day "2018-11-10" hence it would be safe to predict it from the rest of the day 
+
+my_data[which(my_data$Month=="11")[54:61],]$Date
+my_data[which(my_data$Month=="11")[54:61],]$Precipitation2 #it can be zero
+my_data[which(my_data$Month=="11")[54:61],]$`Cloud Cover`
+my_data[which(my_data$Month=="11")[54:61],]$Humidity
+
+my_data[which(my_data$Month=="11")[54:61],]$Precipitation2[7]="0"
+
+
+
+
+my_data[which(my_data$Month=="03")[165:169],]$Date
+my_data[which(my_data$Month=="03")[165:169],]$Precipitation2 #it can be zero humidity is low 
+my_data[which(my_data$Month=="03")[165:169],]$`Cloud Cover`
+my_data[which(my_data$Month=="03")[165:169],]$Humidity
+
+my_data[which(my_data$Month=="03")[165:169],]$Precipitation2[5] ="0"
+
+#the rest can be discarded
+
+my_data = my_data[-which(my_data$Precipitation2=="NA"),]
+
+class(my_data$Precipitation2)
+my_data$Precipitation2[my_data$Precipitation2 %in% c("3","4")] = "3" #Group thunderstorm and rain
+my_data$Precipitation2[my_data$Precipitation2 %in% c("5")] = "4" #make snow 4th
+my_data$Precipitation2[my_data$Precipitation2 %in% c("6")] = "5" #Wind etc
+
+my_data$Precipitation[my_data$Precipitation %in% c("3: Rain","4: Thunderstorm"  )] = "3: Rain/Thunderstorm" #Group thunderstorm and rain
+my_data$Precipitation[my_data$Precipitation %in% c("5: Snow" )] = "4: Snow" #make snow 4th
+my_data$Precipitation[my_data$Precipitation %in% c("6: Wind-driven dust/sand/snow")] = "5: Wind-driven dust/sand/snow" #Wind etc
+
+
+#We can also discard weird rows as which(my_data$Observer==0) which indicates a row that we had zero observation period its not trustworthy
+
+my_data = my_data[-which(my_data$Observer==0),]
+
+#Also discard row which(my_data$`Cloud Cover`==0 & my_data$Precipitation2=="4") where we have snow but with no clouds impossible
+
+my_data = my_data[-which(my_data$`Cloud Cover`==0 & my_data$Precipitation2=="4"),]
+
+
+
+#Discard Wind Direction
+
+my_data = my_data[-c(which(my_data$`Wind Dir`=="NA"),which(is.na(my_data$`Wind Dir`)==TRUE)),]
+
+
+#Fix Visibility
+
+which(my_data$Visibility=="NA")
+my_data[which(my_data$Visibility=="NA"),]$Date
+my_data[which(my_data$Month=="11"),]$Date
+my_data[which(my_data$Month=="11")[91:95],]$Visibility
+
+my_data[which(my_data$Month=="11")[91:95],]$Visibility[3]="10"
+
+my_data[which(my_data$Visibility=="1/2"),]$Visibility = "0.5"
+my_data[which(my_data$Visibility=="1/4"),]$Visibility = "0.25"
+my_data$Visibility = as.numeric(my_data$Visibility)
+
+#Observe that we have too many zeros!
+ggplot(my_data, aes(x=TOTAL)) + geom_histogram(binwidth = 50,color="black", fill="steelblue")+coord_cartesian(xlim = c(-50, 500)) +xlab("Total Raptor Abundance")
+
+sum(my_data[,8:28]==0)/(dim(my_data[,8:28])[1]*dim(my_data[,8:28])[2]) #percentage of zero values, 92% of counts for birds is zero
+
+
+
+#Impute counters based on web page Allegheny  Front information
+
+which(my_data$Counter=="NA")
+my_data[ which(my_data$Counter=="NA"),]$Date #Discard Date 29 impute the 18
+
+my_data=my_data[-which(my_data$Counter=="NA")[1:5],]
+my_data$Counter[which(my_data$Counter=="NA")] = "11"
+
+
+
+#Total Abundance compared to Dates
+
+for_plot_2 =
+  my_data %>%
+  select(Date,TOTAL)%>%
+  mutate(Datee=as.Date(my_data$Date)) %>%
+  group_by(Datee) %>%
+  mutate(ToT_month=sum(`TOTAL`)) %>%
+  select(Datee,ToT_month) %>%
+  distinct(ToT_month)
+
+
+
+
+ggplot(data = for_plot_2, aes(x = Datee, y = ToT_month)) + geom_line(group = 1)
+p = ggplot(data = for_plot_2, aes(x = Datee, y = ToT_month)) + geom_point(color="purple") + ylab("Counts of total raptor abundance")+xlab("Dates")# + geom_point(data = for_plot_3,aes(x = Datee, y = Temp_month), color = "red")
+p
+
+#Total Abundance compared to Temperature
+
+for_plot_3 =
+  my_data %>%
+  select(Date,Temp)%>%
+  mutate(Datee=as.Date(my_data$Date)) %>%
+  group_by(Datee) %>%
+  mutate(Temp_month=sum(`Temp`)) %>%
+  select(Datee,Temp_month) %>%
+  distinct(Temp_month)
+
+
+
+ggplot(data = for_plot_3, aes(x = Datee, y = Temp_month)) + geom_line(group = 1,col="red") + geom_line(data = for_plot_2,aes(x = Datee, y = ToT_month))
+p_1 = ggplot(data = for_plot_3, aes(x = Datee, y = Temp_month)) + geom_point(color="red")+ylab("Counts ofMontly Temperature")+xlab("Months") #+ geom_point(data = for_plot_2,aes(x = Datee, y = ToT_month),col="red")
+
+
+ggplot(data = my_data, aes(x = Temp, y = TOTAL)) + geom_line(group = 1,col="red")+ylab("Counts of total raptors abundance") + xlab("Temperature")
+
+
+ggarrange(p,p_1) #We can observe a pattern, when we have increase of temperature we also have increase in migration
+
+
+#Total Abundance compared to Humidity
+
+for_plot_4 =
+  my_data %>%
+  select(Date,Humidity)%>%
+  mutate(Datee=as.Date(my_data$Date)) %>%
+  group_by(Datee) %>%
+  mutate(Humidity_month=sum(`Humidity`)) %>%
+  select(Datee,Humidity_month) %>%
+  distinct(Humidity_month)
+
+p_2 = ggplot(data = for_plot_4, aes(x = Datee, y = Humidity_month)) + geom_point(color="red") + ylab("Monthly Humidity") + xlab("Months") #+ geom_point(data = for_plot_2,aes(x = Datee, y = ToT_month),col="red")
+
+ggplot(data=my_data,aes(x=Humidity,y=TOTAL))+geom_point()+ylab("Total Abundance")
+
+
+
+#Precipitation Total Abundance their is a conneciton!
+
+counts = table(my_data$TOTAL,my_data$Precipitation2)
+cringe = as.data.frame.matrix(counts)
+
+
+ggplot(data=my_data, aes(x=Precipitation)) + geom_bar(fill="steelblue") +xlab("Precipitation") + ylab("Counts of raptors weather preference") + theme(axis.text.x = element_text(angle = 45, vjust = 0.6)) #we have mostly migration when the weather is 0
+
+sum(table(my_data$TOTAL,my_data$Precipitation2)[,1])
+sum(table(my_data$TOTAL,my_data$Precipitation2)[,2])
+sum(table(my_data$TOTAL,my_data$Precipitation2)[,3])
+sum(table(my_data$TOTAL,my_data$Precipitation2)[,4])
+
+#TOtal & Cloud Cover  more birds when there is a total cloudy cover
+
+Cloud = my_data$`Cloud Cover`
+
+Cloud[which(Cloud %in% c( 0 ,  2 ,  3,   5,   8 , 10 , 15 , 18 , 20 ))] = "[0-25)%"
+Cloud[which(Cloud %in% c(25, 30  ,35,  40,  42  ,45  ))] = "[25-50)%"
+Cloud[which(Cloud %in% c(50, 55,  60,  65  ,68,  70   ))] = "[50-75)%"
+Cloud[which(Cloud %in% c( 75,80  ,81,  85,  90,  91,  92,  95,  96  ,97,  98,  99 ,100))] = "[75-100]%"
+
+
+
+table(my_data$TOTAL,Cloud)
+
+freq_cloud = c()
+
+for (j in 1:dim(table(my_data$TOTAL,Cloud))[2]){
+  sum =0 
+  for (i in 1:dim(table(my_data$TOTAL,Cloud))[1]) {
+    
+    sum= sum+ table(my_data$TOTAL,Cloud)[i,j]
+    
+    
+  }
+  freq_cloud[j] = sum
+  
+}
+
+
+
+ggplot(data=my_data, aes(x=Cloud)) + geom_bar(fill="steelblue",width =0.5) + ylab("Counts of raptors cloud coverage preference")
+
+
+
+
+
+
+#Flight Height in combination with Fog & Cloud & Rain
+
+FlightHT = substr(my_data[my_data$`Flight HT`!="NA",]$`Flight HT`, start = 1, stop = 1)
+Precipitation = my_data[my_data$`Flight HT`!="NA",]$Precipitation2
+
+
+
+table(FlightHT,Precipitation) #Hight flight when there is no rain, heavy rain low flight
+
+
+#Total & Wind Spd2 , most raptors prefer wind spd2 from 2-4 maybe because they save energy
+
+table(my_data$TOTAL,my_data$`Wind Spd2`)
+
+
+freq_spd2 = c()
+
+for (j in 1:dim(table(my_data$TOTAL,my_data$`Wind Spd2`))[2]){
+  sum =0 
+  for (i in 1:dim(table(my_data$TOTAL,my_data$`Wind Spd2`))[1]) {
+    
+    sum= sum+ table(my_data$TOTAL,my_data$`Wind Spd2`)[i,j]
+    
+    
+  }
+  freq_spd2[j] = sum
+  
+}
+
+which(is.na(my_data$`Wind Spd2`)==TRUE)
+
+ggplot(data=my_data, aes(x=my_data$`WindSp2`)) + geom_bar(fill="steelblue",width =0.7) + xlab("Wind Speed") + ylab("Counts of raptors wind speed preference")
+
+
+
+
+
+#Examine consistency between Wind DIr and Flight Dir, most of the flight happend with Wind and Flight Dir being in a relatively accordance 
+
+
+
+
+which(my_data$`Wind Dir`=="NA")
+which(my_data$`Flight DIR`=="NA")
+
+Flight = my_data[which(my_data$`Flight DIR`!="NA"),]$`Flight DIR`
+
+Flight = substr(Flight, 1, 1)
+Wind = substr(my_data$`Wind Dir`,1,1)
+
+WindDir = Wind[which(my_data$`Flight DIR`!="NA")]
+
+which(my_data$`Flight DIR`!="NA")[which(Flight==WindDir)] #On the original data set, Flights which are in relative accordance to Wind direction
+
+PathAgr = c()
+PathAgr = rep("NA",1226)
+PathAgr[which(my_data$`Flight DIR`!="NA")[which(Flight==WindDir)]] = "Yes"
+PathAgr[which(my_data$`Flight DIR`!="NA")[which(Flight!=WindDir)]] = "No"
+PathAgr[which(PathAgr=="NA")] = "Not applicable"
+
+
+
+my_data$PathAgr = PathAgr #Created variable which indicates the agreement of wind and flight
+  
+
+
+mean(my_data[-which(my_data$PathAgr=="Yes"),]$TOTAL)
+
+
+mean(my_data[which(my_data$PathAgr=="Yes"),]$TOTAL) #We observe that the mean of Yes is much Higher of No this means that Wind accordance helps a lot
+
+
+ggplot(data=my_data, aes(x=my_data$PathAgr)) + geom_bar(fill="steelblue",width =0.7) + ylab("Counts of raptors wind-flight accordance preference")
+
+
+
+#Creating of Variable AllComb, considering all combination between Counters and Observers.
+
+
+
+Counter = my_data$Counter
+Obs1 = my_data$`Observer 1`
+Obs2 = my_data$Observer2.new
+Obs3 = my_data$`Observer 3`
+Obs4 = my_data$`Observer 4`
+
+
+Counter[1:length(Counter)] = "Counter"
+
+Obs1[which(my_data$`Observer 1` %in% my_data$Counter)]= "Counter"
+Obs1[which(Obs1!="NA" & Obs1 != "Counter")] = "Obs1"
+
+Obs2[which(my_data$`Observer2.new` %in% my_data$Counter)] = "Counter"
+Obs2[which(Obs2!="NA" & Obs2 != "Counter")] = "Obs2"
+
+Obs3[which(my_data$`Observer 3` %in% my_data$Counter)] = "Counter"
+Obs3[which(Obs3!="NA" & Obs3 != "Counter")] = "Obs3"
+
+
+Obs4[which(my_data$`Observer 4` %in% my_data$Counter)] = "Counter"
+Obs4[which(Obs4!="NA" & Obs4 != "Counter")] = "Obs4"
+
+
+
+
+All=c()
+
+
+All[which(Obs1 == "NA" & Obs2 == "NA" & Obs3 == "NA" & Obs4== "NA")]="Counter"
+
+All[which(Obs1 != "NA" & Obs1 == "Obs1" & Obs2 == "NA" & Obs3 == "NA" & Obs4== "NA")]="Counter + Obs1"
+All[which(Obs1 != "NA" & Obs1 == "Counter" & Obs2 == "NA" & Obs3 == "NA" & Obs4== "NA")]="Counter + Counter"
+
+
+
+
+#weird case
+
+All[which(Obs1 == "NA"  & Obs2 != "NA" & Obs2=="Obs2" & Obs3 == "NA" & Obs4== "NA")]="Counter + Random + Obs2"
+All[which(Obs1 == "NA"  & Obs2 != "NA" & Obs2=="Counter" & Obs3 == "NA" & Obs4== "NA")]="Counter + Random + Counter"
+
+All[which(Obs1 == "NA" & Obs2 == "NA"  & Obs3 != "NA" & Obs3=="Obs3" & Obs4== "NA")]="Counter + Random + Random + Obs3"
+All[which(Obs1 == "NA" & Obs2 == "NA"  & Obs3 != "NA" & Obs3=="Counter" & Obs4== "NA")]="Counter + Random + Random + Counter"
+
+All[which(Obs1 == "NA" & Obs2 != "NA" & Obs2=="Obs2"  & Obs3 != "NA" & Obs3=="Obs3" & Obs4== "NA")] ="Counter + Random + Obs2 + Obs3"
+All[which(Obs1 == "NA" & Obs2 != "NA" & Obs2=="Obs2"  & Obs3 != "NA" & Obs3=="Counter" & Obs4== "NA")] ="Counter + Random + Obs2 + Counter"
+All[which(Obs1 == "NA" & Obs2 != "NA" & Obs2=="Counter"  & Obs3 != "NA" & Obs3=="Obs3" & Obs4== "NA")] = "Counter + Random + Counter + Obs3"
+All[which(Obs1 == "NA" & Obs2 != "NA" & Obs2=="Counter"  & Obs3 != "NA" & Obs3=="Counter" & Obs4== "NA")] ="Counter + Random + Counter + Counter"
+
+
+All[which(Obs1 == "NA" & Obs2 != "NA" & Obs2=="Obs2"   & Obs3 != "NA" & Obs3=="Obs3" & Obs4!= "NA" & Obs4=="Obs4")] ="Counter + Random + Obs2 + Obs3 + Obs4"
+All[which(Obs1 == "NA" & Obs2 != "NA" & Obs2=="Obs2"   & Obs3 != "NA" & Obs3=="Counter" & Obs4!= "NA" & Obs4=="Counter")] = "Counter + Random + Obs2 + Counter + Counter"
+All[which(Obs1 == "NA" & Obs2 != "NA" & Obs2=="Counter"   & Obs3 != "NA" & Obs3=="Counter" & Obs4!= "NA" & Obs4=="Counter")] = "Counter + Random + Counter + Counter + Counter"
+All[which(Obs1 == "NA" & Obs2 != "NA" & Obs2=="Counter"   & Obs3 != "NA" & Obs3=="Counter" & Obs4!= "NA" & Obs4=="Obs4")] ="Counter + Random + Counter + Counter + Obs4"
+All[which(Obs1 == "NA" & Obs2 != "NA" & Obs2=="Counter"   & Obs3 != "NA" & Obs3=="Obs3" & Obs4!= "NA" & Obs4=="Counter")] ="Counter + Random + Counter + Obs3 + Counter"
+All[which(Obs1 == "NA" & Obs2 != "NA" & Obs2=="Obs2"   & Obs3 != "NA" & Obs3=="Counter" & Obs4!= "NA" & Obs4=="Obs4")] = "Counter + Random + Obs2 + Counter + Obs4"
+
+which(Obs1 != "NA" & Obs2 == "NA"   & Obs3 != "NA" & Obs4!= "NA" )
+
+
+All[which(Obs1 != "NA" & Obs1=="Obs1" & Obs2 == "NA"   & Obs3 != "NA" & Obs3=="Obs3" & Obs4!= "NA" & Obs4=="Obs4")]="Counter + Obs1 + Random + Obs3 + Obs4"
+All[which(Obs1 != "NA" & Obs1=="Counter" & Obs2 == "NA"   & Obs3 != "NA" & Obs3=="Obs3" & Obs4!= "NA" & Obs4=="Obs4")]="Counter + Counter + Random + Obs3 + Obs4"
+All[which(Obs1 != "NA" & Obs1=="Obs1" & Obs2 == "NA"   & Obs3 != "NA" & Obs3=="Counter" & Obs4!= "NA" & Obs4=="Obs4")]="Counter + Obs1 + Random + Counter + Obs4"
+All[which(Obs1 != "NA" & Obs1=="Obs1" & Obs2 == "NA"   & Obs3 != "NA" & Obs3=="Obs3" & Obs4!= "NA" & Obs4=="Counter")]="Counter + Obs1 + Random + Obs3 + Counter"
+All[which(Obs1 != "NA" & Obs1=="Obs1" & Obs2 == "NA"   & Obs3 != "NA" & Obs3=="Counter" & Obs4!= "NA" & Obs4=="Counter")] ="Counter + Obs1 + Random + Counter + Counter"
+All[which(Obs1 != "NA" & Obs1=="Counter" & Obs2 == "NA"   & Obs3 != "NA" & Obs3=="Obs3" & Obs4!= "NA" & Obs4=="Counter")] = "Counter + Counter + Random + Obs3 + Counter"
+All[which(Obs1 != "NA" & Obs1=="Counter" & Obs2 == "NA"   & Obs3 != "NA" & Obs3=="Counter" & Obs4!= "NA" & Obs4=="Counter")] = "Counter + Counter + Random + Counter + Counter"
+All[which(Obs1 != "NA" & Obs1=="Counter" & Obs2 == "NA"   & Obs3 != "NA" & Obs3=="Counter" & Obs4!= "NA" & Obs4=="Obs4")] = "Counter + Counter + Random + Counter + Obs4"
+
+
+
+which(Obs1 != "NA" & Obs2 == "NA"   & Obs3 == "NA" & Obs4!= "NA" )
+
+All[which(Obs1 != "NA" & Obs1=="Obs1" & Obs2 == "NA"   & Obs3 == "NA"  & Obs4!= "NA" & Obs4=="Obs4")] = "Counter + Obs1 + Random + Random + Obs4"
+All[which(Obs1 != "NA" & Obs1=="Obs1" & Obs2 == "NA"   & Obs3 == "NA"  & Obs4!= "NA" & Obs4=="Counter")] = "Counter + Obs1 + Random + Random + Counter"
+All[which(Obs1 != "NA" & Obs1=="Counter" & Obs2 == "NA"   & Obs3 == "NA"  & Obs4!= "NA" & Obs4=="Counter")] = "Counter + Counter + Random + Random + Counter"
+All[which(Obs1 != "NA" & Obs1=="Counter" & Obs2 == "NA"   & Obs3 == "NA"  & Obs4!= "NA" & Obs4=="Obs4")] = "Counter + Counter +Random + Random + Obs4"
+
+
+All[which(Obs1 != "NA" & Obs1=="Obs1" & Obs2 == "NA"   & Obs3 != "NA"  & Obs3=="Obs3" & Obs4== "NA")] = "Counter + Obs1 + Random + Obs3 + Random"
+All[which(Obs1 != "NA" & Obs1=="Obs1" & Obs2 == "NA"   & Obs3 != "NA"  & Obs3=="Counter" & Obs4== "NA")] = "Counter + Obs1 + Random + Counter + Random"
+All[which(Obs1 != "NA" & Obs1=="Counter" & Obs2 == "NA"   & Obs3 != "NA"  & Obs3=="Obs3" & Obs4== "NA")] = "Counter + Counter + Random + Obs3 + Random"
+All[which(Obs1 != "NA" & Obs1=="Counter" & Obs2 == "NA"   & Obs3 != "NA"  & Obs3=="Counter" & Obs4== "NA")] = "Counter + Counter + Random + Counter + Random"
+
+
+
+
+
+
+All[which(Obs1 != "NA" & Obs1 == "Obs1" & Obs2 != "NA" & Obs2=="Obs2" & Obs3 == "NA" & Obs4== "NA")]="Counter + Obs1 + Obs2"
+All[which(Obs1 != "NA" & Obs1 == "Obs1" & Obs2 != "NA" & Obs2 == "Counter" & Obs3 == "NA" & Obs4== "NA")]="Counter + Obs1 + Counter"
+All[which(Obs1 != "NA" & Obs1 == "Counter" & Obs2 != "NA" & Obs2=="Obs2" & Obs3 == "NA" & Obs4== "NA")]="Counter + Counter + Obs2"
+All[which(Obs1 != "NA" & Obs1 == "Counter" & Obs2 != "NA" & Obs2 == "Counter" & Obs3 == "NA" & Obs4== "NA")]="Counter + Counter + Counter"
+
+
+All[which(Obs1 != "NA" & Obs1 == "Obs1" & Obs2 != "NA" & Obs2=="Obs2" & Obs3 != "NA" & Obs3=="Obs3" & Obs4== "NA")]="Counter + Obs1 + Obs2 + Obs3"
+All[which(Obs1 != "NA" & Obs1 == "Obs1" & Obs2 != "NA" & Obs2 == "Counter" & Obs3 != "NA" & Obs3 == "Counter" & Obs4== "NA")]="Counter + Obs1 + Counter + Counter"
+All[which(Obs1 != "NA" & Obs1 == "Counter" & Obs2 != "NA" & Obs2=="Obs2" & Obs3 != "NA" & Obs3=="Obs3" & Obs4== "NA")]="Counter + Counter + Obs2 + Obs3"
+All[which(Obs1 != "NA" & Obs1 == "Counter" & Obs2 != "NA" & Obs2 == "Counter" & Obs3 != "NA" & Obs3 == "Counter" & Obs4== "NA")]="Counter + Counter + Counter + Counter"
+All[which(Obs1 != "NA" & Obs1 == "Obs1" & Obs2 != "NA" & Obs2 == "Counter" & Obs3 != "NA" & Obs3 == "Obs3" & Obs4== "NA")]="Counter + Obs1 + Counter + Obs3"
+All[which(Obs1 != "NA" & Obs1 == "Obs1" & Obs2 != "NA" & Obs2 == "Obs2" & Obs3 != "NA" & Obs3 == "Counter" & Obs4== "NA")]="Counter + Obs1 + Obs2 + Counter"
+All[which(Obs1 != "NA" & Obs1 == "Counter" & Obs2 != "NA" & Obs2 == "Obs2" & Obs3 != "NA" & Obs3 == "Counter" & Obs4== "NA")]="Counter + Counter + Obs2 + Counter"
+All[which(Obs1 != "NA" & Obs1 == "Counter" & Obs2 != "NA" & Obs2 == "Counter" & Obs3 != "NA" & Obs3 == "obs3" & Obs4== "NA")]="Counter + Counter + Counter + Obs3"
+
+
+
+
+
+All[which(Obs1 != "NA" & Obs1 == "Obs1" & Obs2 != "NA" & Obs2=="Obs2" & Obs3 != "NA" & Obs3=="Obs3" & Obs4!= "NA" & Obs4=="Obs4")] = "Counter + Obs1 + Obs2 + Obs3 + Obs4"
+All[which(Obs1 != "NA" & Obs1 == "Obs1" & Obs2 != "NA" & Obs2=="Obs2" & Obs3 != "NA" & Obs3=="Obs3" & Obs4!= "NA" & Obs4=="Counter")] = "Counter + Obs1 + Obs2 + Obs3 + Counter"
+All[which(Obs1 != "NA" & Obs1 == "Obs1" & Obs2 != "NA" & Obs2=="Obs2" & Obs3 != "NA" & Obs3=="Counter" & Obs4!= "NA" & Obs4=="Obs4")] = "Counter + Obs1 + Obs2 + Counter + Obs4"
+All[which(Obs1 != "NA" & Obs1 == "Obs1" & Obs2 != "NA" & Obs2=="Obs2" & Obs3 != "NA" & Obs3=="Counter" & Obs4!= "NA" & Obs4=="Counter")] = "Counter + Obs1 + Obs2 + Counter + Counter"
+All[which(Obs1 != "NA" & Obs1 == "Obs1" & Obs2 != "NA" & Obs2=="Counter" & Obs3 != "NA" & Obs3=="Obs3" & Obs4!= "NA" & Obs4=="Obs4")] = "Counter + Obs1 + Counter + Obs3 + Obs4"
+All[which(Obs1 != "NA" & Obs1 == "Obs1" & Obs2 != "NA" & Obs2=="Counter" & Obs3 != "NA" & Obs3=="Obs3" & Obs4!= "NA" & Obs4=="Counter")] = "Counter + Obs1 + Counter + Obs3 + Counter"
+All[which(Obs1 != "NA" & Obs1 == "Obs1" & Obs2 != "NA" & Obs2=="Counter" & Obs3 != "NA" & Obs3=="Counter" & Obs4!= "NA" & Obs4=="Obs4")] = "Counter + Obs1 + Counter + Counter + Obs4"
+All[which(Obs1 != "NA" & Obs1 == "Obs1" & Obs2 != "NA" & Obs2=="Counter" & Obs3 != "NA" & Obs3=="Counter" & Obs4!= "NA" & Obs4=="Counter")] = "Counter  + Obs1 + Counter + Counter + Counter"
+All[which(Obs1 != "NA" & Obs1 == "Counter" & Obs2 != "NA" & Obs2=="Counter" & Obs3 != "NA" & Obs3=="Counter" & Obs4!= "NA" & Obs4=="Obs4")] = "Counter + Counter + Counter + Counter + Obs4"
+All[which(Obs1 != "NA" & Obs1 == "Counter" & Obs2 != "NA" & Obs2=="Obs2" & Obs3 != "NA" & Obs3=="Obs3" & Obs4!= "NA" & Obs4=="Obs4")] = "Counter + Counter + Obs2 + Obs3 + Obs4"
+All[which(Obs1 != "NA" & Obs1 == "Counter" & Obs2 != "NA" & Obs2=="Counter" & Obs3 != "NA" & Obs3=="Obs3" & Obs4!= "NA" & Obs4=="Obs4")] = "Counter + Counter + Counter + Obs3 + Obs4"
+All[which(Obs1 != "NA" & Obs1 == "Counter" & Obs2 != "NA" & Obs2=="Counter" & Obs3 != "NA" & Obs3=="Obs3" & Obs4!= "NA" & Obs4=="Counter")] ="Counter + Counter + Counter + Obs3 + Counter"
+All[which(Obs1 != "NA" & Obs1 == "Counter" & Obs2 != "NA" & Obs2=="Obs2" & Obs3 != "NA" & Obs3=="Counter" & Obs4!= "NA" & Obs4=="Counter")] = "Counter + Counter + Obs2 + Counter + Counter"
+All[which(Obs1 != "NA" & Obs1 == "Counter" & Obs2 != "NA" & Obs2=="Obs2" & Obs3 != "NA" & Obs3=="Obs3" & Obs4!= "NA" & Obs4=="Counter")] ="Counter + Counter + Obs2 + Obs3 + Counter"
+All[which(Obs1 != "NA" & Obs1 == "Counter" & Obs2 != "NA" & Obs2=="Counter" & Obs3 != "NA" & Obs3=="Counter" & Obs4!= "NA" & Obs4=="Counter")] = "Counter + Counter + Counter + Counter + Counter"
+All[which(Obs1 != "NA" & Obs1 == "Counter" & Obs2 != "NA" & Obs2=="Obs2" & Obs3 != "NA" & Obs3=="Counter" & Obs4!= "NA" & Obs4=="Obs4")] = "Counter + Counter + Obs2 + Counter + Obs4"
+
+
+
+my_data[which(is.na(All)==TRUE),]$Date
+which(is.na(All)==TRUE)
+
+All[18]= "Counter + Counter + Counter + Obs3"
+All[371] = "Counter + Counter + Counter + Obs3"
+All[385]= "Counter + Counter + Counter + Obs3"
+All[386]= "Counter + Counter + Counter + Obs3"
+All[402] = "Counter + Counter + Counter + Obs3"
+All[433]= "Counter + Counter + Counter + Obs3"
+All[474]= "Counter + Counter + Counter + Obs3"
+All[475]= "Counter + Counter + Counter + Obs3"
+All[476]= "Counter + Counter + Counter + Obs3"
+All[536]= "Counter + Random + Counter + Obs3 + Obs4"
+All[603]= "Counter + Random + Random + Counter + Obs4"
+All[968]= "Counter + Counter + Counter + Obs3"
+All[969]= "Counter + Counter + Counter + Obs3"
+All[970]= "Counter + Counter + Counter + Obs3"
+All[1074]= "Counter + Counter + Counter + Obs3"
+
+my_data$All = All
+
+
+#we even more group the variable All
+
+All[which(All=="Counter + Obs1 + Counter" | All=="Counter + Counter + Obs2")] = "2Counters + 1Obs"
+
+All[which(All=="Counter + Obs1 + Counter + Counter" | All=="Counter + Counter + Obs2 + Counter" | All=="Counter + Counter + Counter + Obs3")]="3Counters + 1Obs"
+
+All[which(All=="Counter + Obs1 + Counter + Counter + Counter" | All=="Counter + Counter + Obs2 + Counter + Counter" | All=="Counter + Counter + Counter + Obs3 + Counter" | All=="Counter + Counter + Counter + Counter + Obs4")]="4Counters + 1Obs"
+
+All[which(All=="Counter + Obs1 + Obs2 + Counter" | All=="Counter + Counter + Obs2 + Obs3" | All=="Counter + Obs1 + Counter + Obs3")]="2Counters + 2Obs"
+
+All[which(All=="Counter + Counter + Obs2 + Obs3 + Counter" | All=="Counter + Obs1 + Obs2 + Counter + Counter" | All=="Counter + Obs1 + Counter + Obs3 + Counter" | All=="Counter + Obs1 + Counter + Counter + Obs4" | All=="Counter + Counter + Counter + Obs3 + Obs4" | All=="Counter + Counter + Obs2 + Counter + Obs4")]="3Counters + 2Obs"
+
+
+All[which(All=="Counter + Counter + Obs2 + Obs3 + Obs4" | All=="Counter + Obs1 + Counter + Obs3 + Obs4" | All=="Counter + Obs1 + Obs2 + Counter + Obs4" | All=="Counter + Obs1 + Obs2 + Obs3 + Counter")]="2Counters + 3Obs"
+
+
+All[which(All=="Counter + Random + Random + Counter" | All=="Counter + Counter + Random + Random" | All=="Counter + Random + Counter + Random")]="2Counters + 2Randoms"
+
+All[which(All=="Counter  + Obs1 + Counter + Counter + Counter")]="4Counters + 1Obs"
+
+All[which(All=="Counter + Obs1 + Random + Obs3 + Obs4" | All=="Counter + Random + Obs2 + Obs3 + Obs4" )]="1Counter + 3Obs + 1Random"
+
+All[which(All=="Counter + Random + Random + Counter + Obs4" | All=="Counter + Obs1 + Random + Random + Counter" | All=="Counter + Counter +Random + Random + Obs4"| All=="Counter + Counter + Random + Obs3 + Random")]="2Counters + 2Randoms + 1Obs"
+
+All[which(All=="Counter + Counter + Random + Obs3 + Counter" | All=="Counter + Obs1 + Random + Counter + Counter" | All=="Counter + Random + Counter + Obs3 + Counter" | All=="Counter + Random + Obs2 + Counter + Counter")]="3Counters + 1Randoms + 1Obs"
+
+All[which(All=="Counter")]="1Counters"
+
+All[which(All=="Counter + Counter + Counter + Counter")]="4Counters"
+
+All[which(All=="Counter + Counter")]="2Counters"
+
+All[which(All=="Counter + Counter + Random + Counter + Random")]="3Counters + 2Randoms"
+
+All[which(All=="Counter + Obs1 + Obs2")]="1Counters + 2Obs"
+
+All[which(All=="Counter + Obs1" )]="1Counters + 1Obs"
+
+All[which(All=="Counter + Random + Counter")]="2Counters + 1Randoms"
+
+All[which(All=="Counter + Counter + Counter + Counter + Counter")]="5Counters"
+
+All[which(All== "Counter + Counter + Random + Obs3 + Obs4")]="2Counters + 1Randoms + 2Obs"
+
+All[which(All=="Counter + Obs1 + Obs2 + Obs3")]="1Counters + 3Obs"
+
+All[which(All=="Counter + Random + Counter + Obs3 + Obs4")]="2Counters + 1Randoms + 2Obs"
+
+All[which(All=="Counter + Random + Obs2")]="1Counters + 1Randoms + 1Obs"
+
+All[which(All=="Counter + Random + Counter + Counter")]="3Counters + 1Randoms"
+
+All[which(All=="Counter + Obs1 + Obs2 + Obs3 + Obs4")]="1Counters + 4Obs"
+
+All[which(All=="Counter + Random + Random + Obs3")]="1Counters + 2Randoms + 1Obs"
+
+All[which(All=="Counter + Random + Obs2 + Obs3")]="1Counters + 1Randoms + 2Obs"
+
+All[which(All=="Counter + Random + Obs2 + Counter")]="2Counters2 + 1Randoms + 1Obs"
+
+All[which(All=="Counter + Counter + Counter")]="3Counters"
+
+
+All[which(All=="3Counters + 2Randoms" | All=="3Counters + 1Randoms"  | All=="3Counters + 1Randoms + 1Obs")]= "3Counters + R + Obs"
+
+All[which(All=="2Counters + 1Randoms" | All=="2Counters + 2Randoms")]= "2Counters + R"
+
+All[which(All=="2Counters + 2Randoms + 1Obs" | All=="2Counters + 1Randoms + 1Obs" | All=="2Counters2 + 1Randoms + 1Obs" | All=="2Counters + 1Randoms + 2Obs")]="2Counters + R + 1_2Obs"
+
+All[which(All=="1Counters + 1Randoms + 3Obs" | All=="1Counters + 1Randoms + 2Obs" | All=="1Counters + 1Randoms + 1Obs" | All=="1Counters + 2Randoms + 1Obs")]="1Counters + R + 1_2_3Obs"
+
+
+my_data$All=All
+
+
+
+All[which(All=="2Counters + R")]="2Counters + 1Obs"
+All[which(All=="3Counters + R + Obs")]="3Counters + 2Obs"
+All[which(All=="1Counter + 3Obs + 1Random")]="1Counters + R + 1_2_3Obs"
+
+my_data$All=All
+
+#Grouping even more the variable All
+
+my_data$Whole = rep(0,1226)
+my_data$Whole[which(my_data$All=="1Counters" | my_data$All=="1Counters + 1Obs" | my_data$All=="1Counters + 2Obs" | my_data$All=="1Counters + 2Obs" | my_data$All=="1Counters + 3Obs" | my_data$All=="1Counters + 4Obs" | my_data$All=="1Counters + R + 1_2_3Obs")]="1Counters + 0-4Obs"
+
+my_data$Whole[which(my_data$All=="2Counters" | my_data$All=="2Counters + 1Obs" | my_data$All == "2Counters + 2Obs" | my_data$All=="2Counters + 3Obs" | my_data$All=="2Counters + R + 1_2Obs")]="2Counter + 0-3Obs"
+
+my_data$Whole[which(my_data$All=="3Counters" | my_data$All=="3Counters + 1Obs" | my_data$All=="3Counters + 2Obs")]="3Counter + 0-2Obs"
+
+my_data$Whole[which(my_data$All=="4Counters" | my_data$All=="4Counters + 1Obs")]="4Counter + 0-1Obs"
+
+my_data$Whole[which(my_data$All=="5Counters")]="5Counter"
+
+
+
+#Grouping Precipitation because levels have few observers and cannot be fitted
+
+my_data[which(my_data$Precipitation2 %in% c("4","5")),]$Precipitation2="4"
+
+my_data$Precipitation2 = droplevels(my_data$Precipitation2,exclude = "c(5)")
+
+my_data[which(my_data$Precipitation2 %in% c("2","3")),]$Precipitation2="2"
+my_data$Precipitation2 = droplevels(my_data$Precipitation2,exclude = "c(3)")
+
+
+
+#Number of participants
+my_data$Num_Obs = my_data$Observer %/% my_data$Duration
+my_data$Num_Obs = factor(my_data$Num_Obs,ordered = TRUE)
+
+#chaning names
+my_data = my_data %>% rename(WindSp2=`Wind Spd2`)
+my_data = my_data %>% rename(CloudCover=`Cloud Cover`)
+
+
+#Grouping month based on Seasons
+
+GrpMonth=rep(0,1226)
+
+
+my_data$WindS = as.numeric(my_data$WindSp2)
+my_data$Num_Obs=as.factor(my_data$Num_Obs)
+my_data$GrpMonth=as.numeric(GrpMonth)
+
+GrpMonth[which(GrpMonth=="1st")]="1"
+GrpMonth[which(GrpMonth=="2nd")]="2"
+my_data$GrpMonth=GrpMonth
+my_data$GrpMonth=as.numeric(GrpMonth)
+
+
+
+  
+  
+
+  
+  
+  
+#Relation between explanatory variables  
+  
+  boxplot(my_data$Temp~my_data$Precipitation2)
+  
+  
+
+  
+  boxplot(my_data$Temp~my_data$PathAgr)
+  boxplot(my_data$Temp~my_data$GrpMonth)
+  
+  boxplot(my_data$Humidity~my_data$Precipitation2)
+  boxplot(my_data$Humidity~my_data$PathAgr)
+  boxplot(my_data$Humidity~my_data$GrpMonth)
+  
+  boxplot(my_data$CloudCover~my_data$Precipitation2)
+  boxplot(my_data$CloudCover~my_data$PathAgr)
+  boxplot(my_data$CloudCover~my_data$GrpMonth)
+
+  boxplot(my_data$Visibility~my_data$Precipitation2)
+  boxplot(my_data$Visibility~my_data$PathAgr)
+  boxplot(my_data$Visibility~my_data$GrpMonth)
+    
+  boxplot(my_data$Visibility~my_data$Precipitation2)
+  
+  
+  
+  tbl = table(my_data$PathAgr, my_data$Precipitation2) 
+  tbl = table(my_data$PathAgr, my_data$GrpMonth) 
+  tbl = table(my_data$PathAgr, my_data$WindSp2) 
+  tbl = table(my_data$Precipitation2, my_data$GrpMonth) 
+  tbl = table(my_data$Precipitation2, my_data$WindSp2) 
+  tbl = table(my_data$GrpMonth, my_data$WindSp2) 
+  
+  
+  chisq.test(tbl) 
+
+  chisq.test(tbl,simulate.p.value=TRUE) 
+  
+    
+  
+  
+  #Is correlated with no categorical
+  aov1=aov(my_data$Temp~my_data$Precipitation2)
+  aov1=aov(my_data$Temp~my_data$PathAgr)
+  aov1=aov(my_data$Temp~my_data$GrpMonth)
+  aov1=aov(my_data$Temp~my_data$WindSp2)
+  summary(aov1)
+  
+  
+  #No correlation for Humidity
+  aov1=aov(my_data$Humidity~my_data$Precipitation2)
+  aov1=aov(my_data$Humidity~my_data$PathAgr)
+  aov1=aov(my_data$Humidity~my_data$GrpMonth)
+  aov1=aov(my_data$Humidity~my_data$WindSp2)
+  summary(aov1)
+  
+  #No correlation for CloudCover
+  aov1=aov(my_data$CloudCover~my_data$Precipitation2)
+  aov1=aov(my_data$CloudCover~my_data$PathAgr)
+  aov1=aov(my_data$CloudCover~my_data$GrpMonth)
+  aov1=aov(my_data$CloudCover~my_data$WindSp2)
+  summary(aov1)
+  
+  
+  #No correlation for Visibility
+  aov1=aov(my_data$Visibility~my_data$Precipitation2)
+  aov1=aov(my_data$Visibility~my_data$PathAgr)
+  aov1=aov(my_data$Visibility~my_data$GrpMonth)
+  aov1=aov(my_data$Visibility~my_data$WindSp2)
+  summary(aov1)
+  
+  #No correlation for BARO
+  aov1=aov(my_data$BARO~my_data$Precipitation2)
+  aov1=aov(my_data$BARO~my_data$PathAgr)
+  aov1=aov(my_data$BARO~my_data$GrpMonth)
+  aov1=aov(my_data$BARO~my_data$WindSp2)
+  summary(aov1)
+  
+  
+ 
+  
+  #model selection start from full model of our choice
+  
+  f1= gam(TOTAL ~ offset(log(Duration)) + s(CloudCover) + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+          + s(Visibility) + BARO*WindS
+          , data=my_data, family = nb)
+  
+  f2= gam(TOTAL ~ offset(log(Duration)) + s(CloudCover) + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+          + s(Visibility) 
+          , data=my_data, family = nb)
+  
+  
+  f3= gam(TOTAL ~ offset(log(Duration)) + s(CloudCover) + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+          + BARO*WindS
+          , data=my_data, family = nb)
+  
+  
+  f4= gam(TOTAL ~ offset(log(Duration)) + s(CloudCover) + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth 
+          + s(Visibility) + BARO*WindS
+          , data=my_data, family = nb)
+  
+  
+  f5= gam(TOTAL ~ offset(log(Duration)) + s(CloudCover) + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr  + s(Humidity)
+          + s(Visibility) + BARO*WindS
+          , data=my_data, family = nb)
+  
+  
+  f6= gam(TOTAL ~ offset(log(Duration)) + s(CloudCover) + Num_Obs + Whole + s(Temp) + Precipitation2  + GrpMonth + s(Humidity)
+          + s(Visibility) + BARO*WindS
+          , data=my_data, family = nb)
+  
+  
+  f7= gam(TOTAL ~ offset(log(Duration)) + s(CloudCover) + Num_Obs + Whole + s(Temp)  + PathAgr + GrpMonth + s(Humidity)
+          + s(Visibility) + BARO*WindS
+          , data=my_data, family = nb)
+  
+  
+  f8= gam(TOTAL ~ offset(log(Duration)) + s(CloudCover) + Num_Obs + Whole  + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+          + s(Visibility) + BARO*WindS
+          , data=my_data, family = nb)
+  
+  
+  f9= gam(TOTAL ~ offset(log(Duration)) + s(CloudCover) + Num_Obs + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+          + s(Visibility) + BARO*WindS
+          , data=my_data, family = nb)
+  
+  
+  f10= gam(TOTAL ~ offset(log(Duration)) + s(CloudCover)  + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+          + s(Visibility) + BARO*WindS
+          , data=my_data, family = nb)
+  
+  f11= gam(TOTAL ~ offset(log(Duration))  + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+          + s(Visibility) + BARO*WindS
+          , data=my_data, family = nb)
+  
+  
+ 
+  
+  aic.vec<-(c(AIC(f1),AIC(f2), AIC(f3), AIC(f4), AIC(f5),AIC(f6), AIC(f7),
+              AIC(f8),AIC(f9), AIC(f10), AIC(f11)))
+
+  plot(aic.vec)  
+  which.min(aic.vec)
+  
+ 
+  
+  
+  g1= gam(TOTAL ~ offset(log(Duration))  + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+          + s(Visibility) + BARO*WindS
+          , data=my_data, family = nb)
+ 
+  g2= gam(TOTAL ~ offset(log(Duration))  + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+          + s(Visibility) 
+          , data=my_data, family = nb)
+  
+  g3= gam(TOTAL ~ offset(log(Duration))  + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+           + BARO*WindS
+          , data=my_data, family = nb)
+  
+  g4= gam(TOTAL ~ offset(log(Duration))  + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth 
+          + s(Visibility) + BARO*WindS
+          , data=my_data, family = nb)
+  
+  g5= gam(TOTAL ~ offset(log(Duration))  + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr  + s(Humidity)
+          + s(Visibility) + BARO*WindS
+          , data=my_data, family = nb)
+  
+  g6= gam(TOTAL ~ offset(log(Duration))  + Num_Obs + Whole + s(Temp) + Precipitation2 + GrpMonth + s(Humidity)
+          + s(Visibility) + BARO*WindS
+          , data=my_data, family = nb)
+  
+  g7= gam(TOTAL ~ offset(log(Duration))  + Num_Obs + Whole + s(Temp)  + PathAgr + GrpMonth + s(Humidity)
+          + s(Visibility) + BARO*WindS
+          , data=my_data, family = nb)
+
+  g8= gam(TOTAL ~ offset(log(Duration))  + Num_Obs + Whole  + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+          + s(Visibility) + BARO*WindS
+          , data=my_data, family = nb)
+  
+  g9= gam(TOTAL ~ offset(log(Duration))  + Num_Obs  + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+          + s(Visibility) + BARO*WindS
+          , data=my_data, family = nb)
+  
+  g10= gam(TOTAL ~ offset(log(Duration))  + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+          + s(Visibility) + BARO*WindS
+          , data=my_data, family = nb)
+ 
+  
+  
+  aic.vec<-(c(AIC(g1),AIC(g2), AIC(g3), AIC(g4), AIC(g5),AIC(g6), AIC(g7),
+              AIC(g8),AIC(g9), AIC(g10)))
+  
+  plot(aic.vec)  
+  which.min(aic.vec)
+  
+  
+  
+  k1=  gam(TOTAL ~ offset(log(Duration))  + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+           + s(Visibility) 
+           , data=my_data, family = nb)
+ 
+  
+  k2=  gam(TOTAL ~ offset(log(Duration))  + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+            
+           , data=my_data, family = nb)
+  
+  k3=  gam(TOTAL ~ offset(log(Duration))  + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth
+           + s(Visibility) 
+           , data=my_data, family = nb)
+  
+  k4=  gam(TOTAL ~ offset(log(Duration))  + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr  + s(Humidity)
+           + s(Visibility) 
+           , data=my_data, family = nb)
+  
+  k5=  gam(TOTAL ~ offset(log(Duration))  + Num_Obs + Whole + s(Temp) + Precipitation2  + GrpMonth + s(Humidity)
+           + s(Visibility) 
+           , data=my_data, family = nb)
+  
+  k6=  gam(TOTAL ~ offset(log(Duration))  + Num_Obs + Whole + s(Temp)  + PathAgr + GrpMonth + s(Humidity)
+           + s(Visibility) 
+           , data=my_data, family = nb)
+  
+  k7=  gam(TOTAL ~ offset(log(Duration))  + Num_Obs + Whole + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+           + s(Visibility) 
+           , data=my_data, family = nb)
+  
+  k8=  gam(TOTAL ~ offset(log(Duration))  + Num_Obs  + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+           + s(Visibility) 
+           , data=my_data, family = nb)
+  
+  k9=  gam(TOTAL ~ offset(log(Duration))  + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+           + s(Visibility) 
+           , data=my_data, family = nb)
+  
+ 
+  
+  aic.vec<-(c(AIC(k1),AIC(k2), AIC(k3), AIC(k4), AIC(k5),AIC(k6), AIC(k7),
+              AIC(k8), AIC(k9)))
+  
+  plot(aic.vec)  
+  which.min(aic.vec)
+  
+  
+  
+  
+  
+  t1= gam(TOTAL ~ offset(log(Duration))+ CloudCover+ s(Num_Obs,bs="re") + Whole + Temp*Precipitation2 
+          +Humidity  + Visibility  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+          , data=my_data, family = nb)
+  
+  t2= gam(TOTAL ~ offset(log(Duration))+ CloudCover+ Num_Obs + Whole + Temp*Precipitation2 + Temp*PathAgr 
+          +Humidity*PathAgr  + Visibility*Precipitation2  + PathAgr*GrpMonth 
+          , data=my_data, family = nb)
+  
+  t3= gam(TOTAL ~ offset(log(Duration))+ CloudCover+ Num_Obs + Whole + Temp*Precipitation2 + Temp*PathAgr 
+          +Humidity*PathAgr  + Visibility*Precipitation2   + Precipitation2*GrpMonth
+          , data=my_data, family = nb)
+  
+  t4= gam(TOTAL ~ offset(log(Duration))+ CloudCover+ Num_Obs + Whole + Temp*Precipitation2 + Temp*PathAgr 
+          +Humidity*PathAgr    + PathAgr*GrpMonth + Precipitation2*GrpMonth
+          , data=my_data, family = nb)
+  
+  t5= gam(TOTAL ~ offset(log(Duration))+ CloudCover+ Num_Obs + Whole + Temp*Precipitation2 + Temp*PathAgr 
+            + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+          , data=my_data, family = nb)
+  
+  t6= gam(TOTAL ~ offset(log(Duration))+ CloudCover+ Num_Obs + Whole + Temp*Precipitation2  
+          +Humidity*PathAgr  + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+          , data=my_data, family = nb)
+  
+  t7= gam(TOTAL ~ offset(log(Duration))+ CloudCover+ Num_Obs + Whole  + Temp*PathAgr 
+          +Humidity*PathAgr  + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+          , data=my_data, family = nb)
+  
+  t8= gam(TOTAL ~ offset(log(Duration))+ CloudCover+ Num_Obs  + Temp*Precipitation2 + Temp*PathAgr 
+          +Humidity*PathAgr  + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+          , data=my_data, family = nb)
+  
+  t9= gam(TOTAL ~ offset(log(Duration))+ CloudCover + Whole + Temp*Precipitation2 + Temp*PathAgr 
+          +Humidity*PathAgr  + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+          , data=my_data, family = nb)
+  
+  t10= gam(TOTAL ~ offset(log(Duration))+ Num_Obs + Whole + Temp*Precipitation2 + Temp*PathAgr 
+          +Humidity*PathAgr  + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+          , data=my_data, family = nb)
+  
+ 
+  
+  
+  aic.vec<-(c(AIC(t1),AIC(t2), AIC(t3), AIC(t4), AIC(t5),AIC(t6), AIC(t7),AIC(t9),AIC(t10)))
+              
+  
+  plot(aic.vec)  
+  which.min(aic.vec)
+  
+  
+  s1= gam(TOTAL ~ offset(log(Duration))+ CloudCover+ Num_Obs + All  + Temp*PathAgr 
+          +Humidity*PathAgr  + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+          , data=my_data, family = nb)
+  
+  s2= gam(TOTAL ~ offset(log(Duration))+ CloudCover+ Num_Obs + All  + Temp*PathAgr 
+          +Humidity*PathAgr  + Visibility*Precipitation2  + PathAgr*GrpMonth 
+          , data=my_data, family = nb)
+  
+  s3= gam(TOTAL ~ offset(log(Duration))+ CloudCover+ Num_Obs + All  + Temp*PathAgr 
+          +Humidity*PathAgr  + Visibility*Precipitation2  + Precipitation2*GrpMonth
+          , data=my_data, family = nb)
+  
+  s4= gam(TOTAL ~ offset(log(Duration))+ CloudCover+ Num_Obs + All  + Temp*PathAgr 
+          +Humidity*PathAgr  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+          , data=my_data, family = nb)
+  
+  s5= gam(TOTAL ~ offset(log(Duration))+ CloudCover+ Num_Obs + All  + Temp*PathAgr 
+            + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+          , data=my_data, family = nb)
+  
+  s6= gam(TOTAL ~ offset(log(Duration))+ CloudCover+ Num_Obs + All  +
+          +Humidity*PathAgr  + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+          , data=my_data, family = nb)
+  
+  s7= gam(TOTAL ~ offset(log(Duration))+ CloudCover+ Num_Obs   + Temp*PathAgr 
+          +Humidity*PathAgr  + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+          , data=my_data, family = nb)
+ 
+  s8= gam(TOTAL ~ offset(log(Duration))+ CloudCover + All  + Temp*PathAgr 
+          +Humidity*PathAgr  + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+          , data=my_data, family = nb)
+  
+  s9= gam(TOTAL ~ offset(log(Duration))+ Num_Obs + All  + Temp*PathAgr 
+          +Humidity*PathAgr  + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+          , data=my_data, family = nb)
+  
+  
+  aic.vec<-(c(AIC(s1),AIC(s2), AIC(s3), AIC(s4), AIC(s5),AIC(s6), AIC(s7),
+              AIC(s8),AIC(s9)))
+  
+  plot(aic.vec)  
+  which.min(aic.vec)
+  
+  
+  
+  
+  d1= gam(TOTAL ~ offset(log(Duration))+ Num_Obs + All  +CloudCover + Temp*PathAgr 
+          +Humidity*PathAgr  + Visibility*Precipitation2 + PathAgr*GrpMonth 
+          , data=my_data, family = nb) 
+  d2= gam(TOTAL ~ offset(log(Duration))+ Num_Obs + All  +CloudCover + Temp*PathAgr 
+          +Humidity*PathAgr  + Visibility*Precipitation2 + Precipitation2*GrpMonth
+          , data=my_data, family = nb) 
+  d3= gam(TOTAL ~ offset(log(Duration))+ Num_Obs + All  +CloudCover + Temp*PathAgr 
+          +Humidity*PathAgr   + PathAgr*GrpMonth + Precipitation2*GrpMonth
+          , data=my_data, family = nb) 
+  d4= gam(TOTAL ~ offset(log(Duration))+ Num_Obs + All  +CloudCover + Temp*PathAgr 
+          + Visibility*Precipitation2 + PathAgr*GrpMonth + Precipitation2*GrpMonth
+          , data=my_data, family = nb) 
+  d5= gam(TOTAL ~ offset(log(Duration))+ Num_Obs + All  +CloudCover
+          +Humidity*PathAgr  + Visibility*Precipitation2 + PathAgr*GrpMonth + Precipitation2*GrpMonth
+          , data=my_data, family = nb) 
+  d6= gam(TOTAL ~ offset(log(Duration))+ Num_Obs + All   + Temp*PathAgr 
+          +Humidity*PathAgr  + Visibility*Precipitation2 + PathAgr*GrpMonth + Precipitation2*GrpMonth
+          , data=my_data, family = nb) 
+  
+  
+  
+  aic.vec<-(c(AIC(d1),AIC(d2), AIC(d3), AIC(d4), AIC(d5),AIC(d6)))
+  
+  plot(aic.vec)  
+  which.min(aic.vec)
+  
+ 
+
+
+############################Chosen model #######################
+
+
+
+
+total_raptor = gam(TOTAL~ offset(log(Duration)) + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+         + s(Visibility)
+         , data=my_data, family = nb)
+
+k5 = total_raptor
+
+
+#vif(k5)
+par(mfrow=c(2,2))
+plot(predict(k5,type="response"),residuals(k5), main="a",xlab="fitted values",ylab="residuals")
+plot(predict(k5,type="response"),k5$y, main="b",xlab="fitted values",ylab="response");abline(0,1,col=2)
+plot(k5$linear.predictors,k5$y, main="c",xlab="linear predictor",ylab="response")
+qq.gam(k5,rep=100,level=1, main="d")
+
+AIC(k5)
+summary(k5)
+nzeros<-numeric()
+b<-k5
+for (i in 1:500){
+  simcounts<-rnbinom(n=1226,size=0.765,mu=predict(b,type="response")) # simulate from poisson distribution using fitted values
+  nzeros<-c(nzeros, sum(simcounts==0))
+}
+hist(nzeros); mean(nzeros); sum(my_data$TOTAL==0)
+
+abline(v=536)
+
+
+#bayesian case
+
+fit1 <- brm(TOTAL ~ offset(log(Duration)) + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+            + s(Visibility),data = my_data, family = negbinomial(),
+            warmup = 1000, iter = 2000, chains = 2,cores=4,control=list(adapt_delta=0.99,max_treedepth=12))
+
+nzeros<-numeric()
+b<-fit1
+for (i in 1:500){
+  simcounts<-rnbinom(n=1226,size=0.77,mu=predict(b,type="response")) # simulate from poisson distribution using fitted values
+  nzeros<-c(nzeros, sum(simcounts==0))
+}
+hist(nzeros,main="Histogram of zero counts",xlab="zero counts"); mean(nzeros); sum(my_data$TOTAL==0)
+
+abline(v=536)
+
+
+
+msms <- conditional_smooths(fit1)
+
+
+
+##############################Comparison of Observers###################
+
+model <- "
+// negative binomial parameterized as eta (log(mu)) and dispersion (phi)
+// see p286 in stan-reference-2.4.0.pdf
+// a basic GLM example
+data {
+  int<lower=1> F;
+  int<lower=1> N;
+  int<lower=1> K;// rows of data
+  matrix[N,F] x;
+  // predictor
+  int<lower=0> y[N]; // response
+  vector[K] C;
+}
+parameters {
+  real<lower=0> phi; // neg. binomial dispersion parameter
+  
+  simplex[K] b;
+  
+}
+
+
+model {
+  // priors:
+  phi ~ cauchy(0, 3);
+  b ~ dirichlet(C);
+  
+  // data model:
+  for(i in 1:N){
+  y[i] ~ neg_binomial_2_log(x[i,1:K]*b, phi);
+  }
+}
+"
+
+ 
+Z <- c()  
+Z$Precipitation2= my_data$Precipitation2
+Z$Temp = my_data$Temp
+Z$Visibility=my_data$Visibility
+Z$PathAgr=my_data$PathAgr
+Z$Humidity=my_data$Humidity
+Z$CloudCover=my_data$CloudCover
+Z$Whole=my_data$Whole
+Z$Wind=my_data$WindS
+Z$BARO=my_data$BARO
+Z$GrpMonth=my_data$GrpMonth
+Z=as.data.frame(Z)
+
+D = my_data[,48:100]
+N = nrow(D)
+C=rep(1,53)
+y= my_data$TOTAL
+
+K = ncol(D)
+D=D[,order(names(D))]
+
+G = cbind(D,Z)
+
+s = stan(model_code = model,
+     data = list(N = N, x = G ,y = y,C=C ,K=53,J=ncol(Z),offset=log(my_data$Duration),F=ncol(G)),
+     iter = 1000, chains = 1)
+
+sort(summary(s)[[1]][2:54,1],decreasing = TRUE)[1:7]
+
+
+
+
+
+posterior <- as.array(s)
+library(bayesplot)
+mcmc_intervals(posterior, pars = c("b[1]", "b[2]", "b[3]", "b[4]","b[5]", "b[6]", "b[7]", "b[8]","b[9]", "b[10]", "b[11]", "b[12]",
+                                   "b[13]", "b[14]", "b[15]", "b[16]","b[17]", "b[18]", "b[19]", "b[20]","b[21]", "b[22]", "b[23]", "b[24]",
+                                   "b[24]", "b[25]", "b[26]", "b[27]","b[28]", "b[29]", "b[30]", "b[31]","b[32]", "b[33]", "b[34]", "b[35]",
+                                   "b[36]", "b[37]", "b[38]", "b[39]","b[40]", "b[41]", "b[42]", "b[43]","b[44]", "b[45]", "b[46]", "b[47]",
+                                   "b[48]", "b[49]", "b[50]", "b[51]","b[52]", "b[53]"),prob_outer = 0.95,) + geom_vline(xintercept = 0.02)
+
+
+sum(my_data$TOTAL[which(my_data$`Observer 1`=="15" | my_data$`Observer2.new`=="15" | my_data$`Observer 4`=="15" | my_data$`Observer 3`=="15")])+
+sum(my_data$TOTAL[which(my_data$`Observer 1`=="24" | my_data$`Observer2.new`=="24" | my_data$`Observer 4`=="24" | my_data$`Observer 3`=="24")])+
+sum(my_data$TOTAL[which(my_data$`Observer 1`=="30" | my_data$`Observer2.new`=="30" | my_data$`Observer 4`=="30" | my_data$`Observer 3`=="30")])
+
+
+my_data$TOTAL[which(my_data$`Observer 1`%in% c("15","24","30") | my_data$Observer2.new %in% c("15","24","30") | my_data$`Observer 3`%in% c("15","20","30") | my_data$`Observer 4` %in% c("15","20","30"))]
+
+launch_shinystan(s)
+##################################################HAWK MODELING#################################################33
+
+
+my_data$ToTHawk = my_data$OS + my_data$SS + my_data$CH + my_data$NG + my_data$RS + my_data$BW + my_data$RT + my_data$RL + my_data$UA + my_data$NH
+
+
+
+
+q1= gam(TOTAL ~ offset(log(Duration)) + s(CloudCover) + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+
+q2= gam(TOTAL ~ offset(log(Duration)) + s(CloudCover) + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) 
+        , data=my_data, family = nb)
+
+q3= gam(TOTAL ~ offset(log(Duration)) + s(CloudCover) + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+         + BARO*WindS
+        , data=my_data, family = nb)
+
+q4= gam(TOTAL ~ offset(log(Duration)) + s(CloudCover) + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth 
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+q5= gam(TOTAL ~ offset(log(Duration)) + s(CloudCover) + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr  + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+q6= gam(TOTAL ~ offset(log(Duration)) + s(CloudCover) + Num_Obs + Whole + s(Temp) + Precipitation2  + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+q7= gam(TOTAL ~ offset(log(Duration)) + s(CloudCover) + Num_Obs + Whole + s(Temp)  + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+q8= gam(TOTAL ~ offset(log(Duration)) + s(CloudCover) + Num_Obs + Whole  + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+q9= gam(TOTAL ~ offset(log(Duration)) + s(CloudCover) + Num_Obs  + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+q10= gam(TOTAL ~ offset(log(Duration)) + s(CloudCover)  + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+q11= gam(TOTAL ~ offset(log(Duration))  + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+
+
+
+
+aic.vec<-(c(AIC(q1),AIC(q2), AIC(q3), AIC(q4), AIC(q5),AIC(q6),AIC(q7),AIC(q8), AIC(q9), AIC(q10), AIC(q11)))
+
+plot(aic.vec)  
+which.min(aic.vec)
+
+
+
+
+
+a1= gam(TOTAL ~ offset(log(Duration))  + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+
+a2= gam(TOTAL ~ offset(log(Duration))  + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) 
+        , data=my_data, family = nb)
+
+a3= gam(TOTAL ~ offset(log(Duration))  + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+         + BARO*WindS
+        , data=my_data, family = nb)
+
+
+a4= gam(TOTAL ~ offset(log(Duration))  + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth 
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+a5= gam(TOTAL ~ offset(log(Duration))  + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr  + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+a6= gam(TOTAL ~ offset(log(Duration))  + Num_Obs + Whole + s(Temp) + Precipitation2  + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+a7= gam(TOTAL ~ offset(log(Duration))  + Num_Obs + Whole + s(Temp) + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+a8= gam(TOTAL ~ offset(log(Duration))  + Num_Obs + Whole  + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+a9= gam(TOTAL ~ offset(log(Duration))  + Num_Obs + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+a10= gam(TOTAL ~ offset(log(Duration))  + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+
+
+
+
+
+
+aic.vec<-(c(AIC(a1),AIC(a2), AIC(a3), AIC(a4), AIC(a5),AIC(a6),AIC(a7),AIC(a8), AIC(a9), AIC(a10)))
+
+plot(aic.vec)  
+which.min(aic.vec)
+
+
+
+
+b1= gam(ToTHawk ~ offset(log(Duration))+ CloudCover + Num_Obs + Whole + Temp*PathAgr + Temp*GrpMonth + Humidity*Precipitation2
+        +Humidity*PathAgr  + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+        , data=my_data, family = nb)
+
+b2= gam(ToTHawk ~ offset(log(Duration))+ CloudCover + Num_Obs + Whole + Temp*PathAgr + Temp*GrpMonth + Humidity*Precipitation2
+        +Humidity*PathAgr  + Visibility*Precipitation2  + PathAgr*GrpMonth 
+        , data=my_data, family = nb)
+
+
+b3= gam(ToTHawk ~ offset(log(Duration))+ CloudCover + Num_Obs + Whole + Temp*PathAgr + Temp*GrpMonth + Humidity*Precipitation2
+        +Humidity*PathAgr  + Visibility*Precipitation2   + Precipitation2*GrpMonth
+        , data=my_data, family = nb)
+
+
+b4= gam(ToTHawk ~ offset(log(Duration))+ CloudCover + Num_Obs + Whole + Temp*PathAgr + Temp*GrpMonth + Humidity*Precipitation2
+        +Humidity*PathAgr    + PathAgr*GrpMonth + Precipitation2*GrpMonth
+        , data=my_data, family = nb)
+
+
+b5= gam(ToTHawk ~ offset(log(Duration))+ CloudCover + Num_Obs + Whole + Temp*PathAgr + Temp*GrpMonth + Humidity*Precipitation2
+          + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+        , data=my_data, family = nb)
+
+
+b6= gam(ToTHawk ~ offset(log(Duration))+ CloudCover + Num_Obs + Whole + Temp*PathAgr + Temp*GrpMonth 
+        +Humidity*PathAgr  + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+        , data=my_data, family = nb)
+
+
+b7= gam(ToTHawk ~ offset(log(Duration))+ CloudCover + Num_Obs + Whole + Temp*PathAgr  + Humidity*Precipitation2
+        +Humidity*PathAgr  + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+        , data=my_data, family = nb)
+
+
+b8= gam(ToTHawk ~ offset(log(Duration))+ CloudCover + Num_Obs + Whole  + Temp*GrpMonth + Humidity*Precipitation2
+        +Humidity*PathAgr  + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+        , data=my_data, family = nb)
+
+
+b9= gam(ToTHawk ~ offset(log(Duration))+ CloudCover + Num_Obs  + Temp*PathAgr + Temp*GrpMonth + Humidity*Precipitation2
+        +Humidity*PathAgr  + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+        , data=my_data, family = nb)
+
+
+b10= gam(ToTHawk ~ offset(log(Duration))+ CloudCover  + Whole + Temp*PathAgr + Temp*GrpMonth + Humidity*Precipitation2
+        +Humidity*PathAgr  + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+        , data=my_data, family = nb)
+
+
+b11= gam(ToTHawk ~ offset(log(Duration)) + Num_Obs + Whole + Temp*PathAgr + Temp*GrpMonth + Humidity*Precipitation2
+        +Humidity*PathAgr  + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+        , data=my_data, family = nb)
+
+
+
+
+
+aic.vec<-(c(AIC(b1),AIC(b2), AIC(b3), AIC(b4), AIC(b5),AIC(b6),AIC(b7),AIC(b8), AIC(b9), AIC(b10), AIC(b11)))
+
+plot(aic.vec)  
+which.min(aic.vec)
+
+
+g1= gam(ToTHawk ~ offset(log(Duration))+ CloudCover + Num_Obs + Whole + Temp*PathAgr + Temp*GrpMonth + Humidity*Precipitation2
+        + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+        , data=my_data, family = nb)
+
+g2= gam(ToTHawk ~ offset(log(Duration))+ CloudCover + Num_Obs + Whole + Temp*PathAgr + Temp*GrpMonth + Humidity*Precipitation2
+        + Visibility*Precipitation2  + PathAgr*GrpMonth 
+        , data=my_data, family = nb)
+
+g3= gam(ToTHawk ~ offset(log(Duration))+ CloudCover + Num_Obs + Whole + Temp*PathAgr + Temp*GrpMonth + Humidity*Precipitation2
+        + Visibility*Precipitation2   + Precipitation2*GrpMonth
+        , data=my_data, family = nb)
+
+g4= gam(ToTHawk ~ offset(log(Duration))+ CloudCover + Num_Obs + Whole + Temp*PathAgr + Temp*GrpMonth + Humidity*Precipitation2
+          + PathAgr*GrpMonth + Precipitation2*GrpMonth
+        , data=my_data, family = nb)
+
+g5= gam(ToTHawk ~ offset(log(Duration))+ CloudCover + Num_Obs + Whole + Temp*PathAgr + Temp*GrpMonth 
+        + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+        , data=my_data, family = nb)
+
+
+
+g6= gam(ToTHawk ~ offset(log(Duration))+ CloudCover + Num_Obs + Whole + Temp*PathAgr  + Humidity*Precipitation2
+        + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+        , data=my_data, family = nb)
+
+
+
+g7= gam(ToTHawk ~ offset(log(Duration))+ CloudCover + Num_Obs + Whole  + Temp*GrpMonth + Humidity*Precipitation2
+        + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+        , data=my_data, family = nb)
+
+g8= gam(ToTHawk ~ offset(log(Duration))+ CloudCover + Num_Obs + Temp*PathAgr + Temp*GrpMonth + Humidity*Precipitation2
+        + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+        , data=my_data, family = nb)
+
+g9= gam(ToTHawk ~ offset(log(Duration))+ CloudCover  + Whole + Temp*PathAgr + Temp*GrpMonth + Humidity*Precipitation2
+        + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+        , data=my_data, family = nb)
+
+g10= gam(ToTHawk ~ offset(log(Duration)) + Num_Obs + Whole + Temp*PathAgr + Temp*GrpMonth + Humidity*Precipitation2
+        + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+        , data=my_data, family = nb)
+
+
+
+aic.vec<-(c(AIC(g1),AIC(g2), AIC(g3), AIC(g4), AIC(g5),AIC(g6),AIC(g7),AIC(g8), AIC(g9), AIC(g10)))
+
+plot(aic.vec)  
+which.min(aic.vec)
+
+
+
+v1 = gam(ToTHawk ~ offset(log(Duration))+ CloudCover + Num_Obs + Whole  + Temp*GrpMonth + Humidity*Precipitation2
+         + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+         , data=my_data, family = nb)
+
+v2 = gam(ToTHawk ~ offset(log(Duration))+ CloudCover + Num_Obs + Whole  + Temp*GrpMonth + Humidity*Precipitation2
+         + Visibility*Precipitation2  + PathAgr*GrpMonth 
+         , data=my_data, family = nb)
+
+v3 = gam(ToTHawk ~ offset(log(Duration))+ CloudCover + Num_Obs + Whole  + Temp*GrpMonth + Humidity*Precipitation2
+         + Visibility*Precipitation2   + Precipitation2*GrpMonth
+         , data=my_data, family = nb)
+
+v4 = gam(ToTHawk ~ offset(log(Duration))+ CloudCover + Num_Obs + Whole  + Temp*GrpMonth + Humidity*Precipitation2
+          + PathAgr*GrpMonth + Precipitation2*GrpMonth
+         , data=my_data, family = nb)
+
+v5 = gam(ToTHawk ~ offset(log(Duration))+ CloudCover + Num_Obs + Whole  + Temp*GrpMonth 
+         + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+         , data=my_data, family = nb)
+
+v6 = gam(ToTHawk ~ offset(log(Duration))+ CloudCover + Num_Obs + Whole   + Humidity*Precipitation2
+         + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+         , data=my_data, family = nb)
+
+v7 = gam(ToTHawk ~ offset(log(Duration))+ CloudCover + Num_Obs   + Temp*GrpMonth + Humidity*Precipitation2
+         + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+         , data=my_data, family = nb)
+
+v8 = gam(ToTHawk ~ offset(log(Duration))+ CloudCover  + Whole  + Temp*GrpMonth + Humidity*Precipitation2
+         + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+         , data=my_data, family = nb)
+
+v9 = gam(ToTHawk ~ offset(log(Duration)) + Num_Obs + Whole  + Temp*GrpMonth + Humidity*Precipitation2
+         + Visibility*Precipitation2  + PathAgr*GrpMonth + Precipitation2*GrpMonth
+         , data=my_data, family = nb)
+
+
+
+
+aic.vec<-(c(AIC(v1),AIC(v2), AIC(v3), AIC(v4), AIC(v5),AIC(v6),AIC(v7),AIC(v8), AIC(v9)))
+
+plot(aic.vec)  
+which.min(aic.vec)
+
+
+
+z1 = gam(ToTHawk ~ offset(log(Duration))+ CloudCover + Num_Obs + Whole  + Temp*GrpMonth + Humidity*Precipitation2
+         + Visibility*Precipitation2  + PathAgr*GrpMonth 
+         , data=my_data, family = nb)
+
+z2 = gam(ToTHawk ~ offset(log(Duration))+ CloudCover + Num_Obs + Whole  + Temp*GrpMonth + Humidity*Precipitation2
+         + Visibility*Precipitation2  
+         , data=my_data, family = nb)
+
+z3 = gam(ToTHawk ~ offset(log(Duration))+ CloudCover + Num_Obs + Whole  + Temp*GrpMonth + Humidity*Precipitation2
+          + PathAgr*GrpMonth 
+         , data=my_data, family = nb)
+
+z4 = gam(ToTHawk ~ offset(log(Duration))+ CloudCover + Num_Obs + Whole  + Temp*GrpMonth 
+         + Visibility*Precipitation2  + PathAgr*GrpMonth 
+         , data=my_data, family = nb)
+
+z5 = gam(ToTHawk ~ offset(log(Duration))+ CloudCover + Num_Obs + Whole  + Humidity*Precipitation2
+         + Visibility*Precipitation2  + PathAgr*GrpMonth 
+         , data=my_data, family = nb)
+
+z6 = gam(ToTHawk ~ offset(log(Duration))+ CloudCover + Num_Obs   + Temp*GrpMonth + Humidity*Precipitation2
+         + Visibility*Precipitation2  + PathAgr*GrpMonth 
+         , data=my_data, family = nb)
+
+z7 = gam(ToTHawk ~ offset(log(Duration))+ CloudCover  + Whole  + Temp*GrpMonth + Humidity*Precipitation2
+         + Visibility*Precipitation2  + PathAgr*GrpMonth 
+         , data=my_data, family = nb)
+
+z8 = gam(ToTHawk ~ offset(log(Duration)) + Num_Obs + Whole  + Temp*GrpMonth + Humidity*Precipitation2
+         + Visibility*Precipitation2  + PathAgr*GrpMonth 
+         , data=my_data, family = nb)
+
+
+
+
+
+
+
+aic.vec<-(c(AIC(z1),AIC(z2), AIC(z3), AIC(z4), AIC(z5),AIC(z6),AIC(z7),AIC(z8)))
+
+plot(aic.vec)  
+which.min(aic.vec)
+
+
+
+
+
+hawk_raptor= gam(ToTHawk ~ offset(log(Duration))  +  Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) 
+        , data=my_data, family = nb)
+
+
+q1 = hawk_raptor
+
+par(mfrow=c(2,2))
+plot(predict(q1,type="response"),residuals(q1), main="a")
+plot(predict(q1,type="response"),q1$y, main="b");abline(0,1,col=2)
+plot(q1$linear.predictors,q1$y, main="c")
+qq.gam(q1,rep=100,level=1, main="d")
+
+fit1 <- brm(ToTHawk ~ offset(log(Duration))  + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+            + s(Visibility)   ,data = my_data, family = negbinomial(),
+            warmup = 1000, iter = 2000, chains = 2,cores=4,control=list(adapt_delta=0.99,max_treedepth=12))
+
+xnzeros<-numeric()
+b<-q1 # q7
+for (i in 1:500){
+  simcounts<-rnbinom(n=1226,size=0.604,mu=predict(b,type="response")) # simulate from poisson distribution using fitted values
+  nzeros<-c(nzeros, sum(simcounts==0))
+}
+hist(nzeros,main="Histogram of zero counts"); mean(nzeros); sum(my_data$ToTHawk==0)
+
+abline(v=626,col="red",lwd=3)
+
+
+
+msms <- conditional_smooths(fit1)
+
+
+###################FALCONS MODEL######################3
+
+
+my_data$ToTFalcon = my_data$AK + my_data$ML + my_data$PG + my_data$UF
+
+
+q1= gam(ToTFalcon ~ offset(log(Duration)) + s(CloudCover) + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+
+q2= gam(ToTFalcon ~ offset(log(Duration)) + s(CloudCover) + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility)
+        , data=my_data, family = nb)
+
+q3= gam(ToTFalcon ~ offset(log(Duration)) + s(CloudCover) + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+         + BARO*WindS
+        , data=my_data, family = nb)
+
+q4= gam(ToTFalcon ~ offset(log(Duration)) + s(CloudCover) + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+q5= gam(ToTFalcon ~ offset(log(Duration)) + s(CloudCover) + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr  + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+q6= gam(ToTFalcon ~ offset(log(Duration)) + s(CloudCover) + Num_Obs + Whole + s(Temp) + Precipitation2  + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+q7= gam(ToTFalcon ~ offset(log(Duration)) + s(CloudCover) + Num_Obs + Whole + s(Temp)  + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+q8= gam(ToTFalcon ~ offset(log(Duration)) + s(CloudCover) + Num_Obs + Whole  + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+q9= gam(ToTFalcon ~ offset(log(Duration)) + s(CloudCover) + Num_Obs  + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+q10= gam(ToTFalcon ~ offset(log(Duration)) + s(CloudCover)  + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+q11= gam(ToTFalcon ~ offset(log(Duration)) + Num_Obs + Whole + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+
+
+
+aic.vec<-(c(AIC(q1),AIC(q2), AIC(q3), AIC(q4), AIC(q5),AIC(q6),AIC(q7),AIC(q8), AIC(q9), AIC(q10), AIC(q11)))
+
+plot(aic.vec)  
+which.min(aic.vec)
+
+
+
+a1= gam(ToTFalcon ~ offset(log(Duration)) + s(CloudCover) + Num_Obs  + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+a2= gam(ToTFalcon ~ offset(log(Duration)) + s(CloudCover) + Num_Obs  + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) 
+        , data=my_data, family = nb)
+
+a3= gam(ToTFalcon ~ offset(log(Duration)) + s(CloudCover) + Num_Obs  + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+         + BARO*WindS
+        , data=my_data, family = nb)
+
+a4= gam(ToTFalcon ~ offset(log(Duration)) + s(CloudCover) + Num_Obs  + s(Temp) + Precipitation2 + PathAgr + GrpMonth 
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+a5= gam(ToTFalcon ~ offset(log(Duration)) + s(CloudCover) + Num_Obs  + s(Temp) + Precipitation2 + PathAgr  + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+a6= gam(ToTFalcon ~ offset(log(Duration)) + s(CloudCover) + Num_Obs  + s(Temp) + Precipitation2  + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+a7= gam(ToTFalcon ~ offset(log(Duration)) + s(CloudCover) + Num_Obs  + s(Temp)  + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+a8= gam(ToTFalcon ~ offset(log(Duration)) + s(CloudCover) + Num_Obs   + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+a9= gam(ToTFalcon ~ offset(log(Duration)) + s(CloudCover)   + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+a10= gam(ToTFalcon ~ offset(log(Duration))  + Num_Obs  + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+
+
+
+
+
+
+aic.vec<-(c(AIC(a1),AIC(a2), AIC(a3), AIC(a4), AIC(a5),AIC(a6),AIC(a7),AIC(a8), AIC(a9), AIC(a10)))
+
+plot(aic.vec)  
+which.min(aic.vec)
+
+
+
+b1= gam(ToTFalcon ~ offset(log(Duration))  + Num_Obs  + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+b2= gam(ToTFalcon ~ offset(log(Duration))  + Num_Obs  + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) 
+        , data=my_data, family = nb)
+
+b3= gam(ToTFalcon ~ offset(log(Duration))  + Num_Obs  + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+         + BARO*WindS
+        , data=my_data, family = nb)
+
+b4= gam(ToTFalcon ~ offset(log(Duration))  + Num_Obs  + s(Temp) + Precipitation2 + PathAgr + GrpMonth 
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+b5= gam(ToTFalcon ~ offset(log(Duration))  + Num_Obs  + s(Temp) + Precipitation2 + PathAgr  + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+b6= gam(ToTFalcon ~ offset(log(Duration))  + Num_Obs  + s(Temp) + Precipitation2 + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+b7= gam(ToTFalcon ~ offset(log(Duration))  + Num_Obs  + s(Temp)  + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+b8= gam(ToTFalcon ~ offset(log(Duration))  + Num_Obs  + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+b9= gam(ToTFalcon ~ offset(log(Duration))   + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        + s(Visibility) + BARO*WindS
+        , data=my_data, family = nb)
+
+
+
+
+
+
+
+
+
+aic.vec<-(c(AIC(b1),AIC(b2), AIC(b3), AIC(b4), AIC(b5),AIC(b6),AIC(b7),AIC(b8), AIC(b9)))
+
+plot(aic.vec)  
+which.min(aic.vec)
+
+
+
+
+g1= gam(ToTFalcon ~ offset(log(Duration))  + Num_Obs  + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        + BARO*WindS
+        , data=my_data, family = nb)
+
+g2= gam(ToTFalcon ~ offset(log(Duration))  + Num_Obs  + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        
+        , data=my_data, family = nb)
+
+
+g3= gam(ToTFalcon ~ offset(log(Duration))  + Num_Obs  + s(Temp) + Precipitation2 + PathAgr + GrpMonth
+        + BARO*WindS
+        , data=my_data, family = nb)
+
+
+g4= gam(ToTFalcon ~ offset(log(Duration))  + Num_Obs  + s(Temp) + Precipitation2 + PathAgr  + s(Humidity)
+        + BARO*WindS
+        , data=my_data, family = nb)
+
+
+g5= gam(ToTFalcon ~ offset(log(Duration))  + Num_Obs  + s(Temp) + Precipitation2  + GrpMonth + s(Humidity)
+        + BARO*WindS
+        , data=my_data, family = nb)
+
+
+g6= gam(ToTFalcon ~ offset(log(Duration))  + Num_Obs  + s(Temp)  + PathAgr + GrpMonth + s(Humidity)
+        + BARO*WindS
+        , data=my_data, family = nb)
+
+
+g7= gam(ToTFalcon ~ offset(log(Duration))  + Num_Obs   + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        + BARO*WindS
+        , data=my_data, family = nb)
+
+
+g8= gam(ToTFalcon ~ offset(log(Duration))   + s(Temp) + Precipitation2 + PathAgr + GrpMonth + s(Humidity)
+        + BARO*WindS
+        , data=my_data, family = nb)
+
+
+
+
+
+
+aic.vec<-(c(AIC(g1),AIC(g2), AIC(g3), AIC(g4), AIC(g5),AIC(g6),AIC(g7),AIC(g8)))
+
+plot(aic.vec)  
+which.min(aic.vec)
+
+
+
+
+f1= gam(ToTFalcon ~ offset(log(Duration))  + Num_Obs  + s(Temp) + Precipitation2 + PathAgr  + s(Humidity)
+        + BARO*WindS
+        , data=my_data, family = nb)
+
+
+f2= gam(ToTFalcon ~ offset(log(Duration))  + Num_Obs  + s(Temp) + Precipitation2 + PathAgr  + s(Humidity)
+        
+        , data=my_data, family = nb)
+
+f3= gam(ToTFalcon ~ offset(log(Duration))  + Num_Obs  + s(Temp) + Precipitation2 + PathAgr  
+        + BARO*WindS
+        , data=my_data, family = nb)
+
+f4= gam(ToTFalcon ~ offset(log(Duration))  + Num_Obs  + s(Temp) + Precipitation2   + s(Humidity)
+        + BARO*WindS
+        , data=my_data, family = nb)
+
+f5= gam(ToTFalcon ~ offset(log(Duration))  + Num_Obs  + s(Temp)  + PathAgr  + s(Humidity)
+        + BARO*WindS
+        , data=my_data, family = nb)
+
+f6= gam(ToTFalcon ~ offset(log(Duration))  + Num_Obs  + Precipitation2 + PathAgr  + s(Humidity)
+        + BARO*WindS
+        , data=my_data, family = nb)
+
+f7= gam(ToTFalcon ~ offset(log(Duration))   + s(Temp) + Precipitation2 + PathAgr  + s(Humidity)
+        + BARO*WindS
+        , data=my_data, family = nb)
+
+
+
+
+f1= gam(ToTFalcon ~ offset(log(Duration))  + Num_Obs  + s(Temp) + Precipitation2 + PathAgr  + s(Humidity)
+        + WindS
+        , data=my_data, family = nb)
+
+aic.vec<-(c(AIC(f1),AIC(f2), AIC(f3), AIC(f4), AIC(f5),AIC(f6),AIC(f7)))
+
+plot(aic.vec)  
+which.min(aic.vec)
+
+
+s1= gam(ToTFalcon ~ offset(log(Duration))+ CloudCover + Num_Obs  + Temp*Precipitation2 + Temp*PathAgr + Temp*GrpMonth 
+        +Humidity*PathAgr    + PathAgr*GrpMonth 
+        , data=my_data, family = nb)
+
+s2= gam(ToTFalcon ~ offset(log(Duration))+ CloudCover + Num_Obs  + Temp*Precipitation2 + Temp*PathAgr + Temp*GrpMonth 
+        +Humidity*PathAgr     
+        , data=my_data, family = nb)
+
+s3= gam(ToTFalcon ~ offset(log(Duration))+ CloudCover + Num_Obs  + Temp*Precipitation2 + Temp*PathAgr + Temp*GrpMonth 
+           + PathAgr*GrpMonth 
+        , data=my_data, family = nb)
+
+s4= gam(ToTFalcon ~ offset(log(Duration))+ CloudCover + Num_Obs  + Temp*Precipitation2 + Temp*PathAgr  
+        +Humidity*PathAgr    + PathAgr*GrpMonth 
+        , data=my_data, family = nb)
+
+s5= gam(ToTFalcon ~ offset(log(Duration))+ CloudCover + Num_Obs  + Temp*Precipitation2  + Temp*GrpMonth 
+        +Humidity*PathAgr    + PathAgr*GrpMonth 
+        , data=my_data, family = nb)
+
+s6= gam(ToTFalcon ~ offset(log(Duration))+ CloudCover + Num_Obs + Temp*PathAgr + Temp*GrpMonth 
+        +Humidity*PathAgr    + PathAgr*GrpMonth 
+        , data=my_data, family = nb)
+
+s7= gam(ToTFalcon ~ offset(log(Duration))+ CloudCover  + Temp*Precipitation2 + Temp*PathAgr + Temp*GrpMonth 
+        +Humidity*PathAgr    + PathAgr*GrpMonth 
+        , data=my_data, family = nb)
+
+s8= gam(ToTFalcon ~ offset(log(Duration))+ Num_Obs  + Temp*Precipitation2 + Temp*PathAgr + Temp*GrpMonth 
+        +Humidity*PathAgr    + PathAgr*GrpMonth 
+        , data=my_data, family = nb)
+
+
+
+
+
+
+aic.vec<-(c(AIC(s1),AIC(s2), AIC(s3), AIC(s4), AIC(s5),AIC(s6),AIC(s7),AIC(s8)))
+
+plot(aic.vec)  
+which.min(aic.vec)
+
+
+
+
+k1= gam(ToTFalcon ~ offset(log(Duration))+ CloudCover + Num_Obs  + Temp*Precipitation2 + Temp*PathAgr + Temp*GrpMonth 
+        + PathAgr*GrpMonth 
+        , data=my_data, family = nb)
+k2= gam(ToTFalcon ~ offset(log(Duration))+ CloudCover + Num_Obs  + Temp*Precipitation2 + Temp*PathAgr + Temp*GrpMonth 
+        
+        , data=my_data, family = nb)
+
+k3= gam(ToTFalcon ~ offset(log(Duration))+ CloudCover + Num_Obs  + Temp*Precipitation2 + Temp*PathAgr
+        + PathAgr*GrpMonth 
+        , data=my_data, family = nb)
+
+k4= gam(ToTFalcon ~ offset(log(Duration))+ CloudCover + Num_Obs  + Temp*Precipitation2  + Temp*GrpMonth 
+        + PathAgr*GrpMonth 
+        , data=my_data, family = nb)
+
+k5= gam(ToTFalcon ~ offset(log(Duration))+ CloudCover + Num_Obs   + Temp*PathAgr + Temp*GrpMonth 
+        + PathAgr*GrpMonth 
+        , data=my_data, family = nb)
+
+k6= gam(ToTFalcon ~ offset(log(Duration))+ CloudCover   + Temp*Precipitation2 + Temp*PathAgr + Temp*GrpMonth 
+        + PathAgr*GrpMonth 
+        , data=my_data, family = nb)
+
+k7= gam(ToTFalcon ~ offset(log(Duration)) + Num_Obs  + Temp*Precipitation2 + Temp*PathAgr + Temp*GrpMonth 
+        + PathAgr*GrpMonth 
+        , data=my_data, family = nb)
+
+
+
+
+
+
+
+
+
+aic.vec<-(c(AIC(k1),AIC(k2), AIC(k3), AIC(k4), AIC(k5),AIC(k6),AIC(k7)))
+
+plot(aic.vec)  
+which.min(aic.vec)
+
+
+c1= gam(ToTFalcon ~ offset(log(Duration)) + Num_Obs  + Temp*Precipitation2 + Temp*PathAgr + Temp*GrpMonth 
+        + PathAgr*GrpMonth 
+        , data=my_data, family = nb)
+
+c2= gam(ToTFalcon ~ offset(log(Duration)) + Num_Obs  + Temp*Precipitation2 + Temp*PathAgr + Temp*GrpMonth 
+        
+        , data=my_data, family = nb)
+
+c3= gam(ToTFalcon ~ offset(log(Duration)) + Num_Obs  + Temp*Precipitation2 + Temp*PathAgr  
+        + PathAgr*GrpMonth 
+        , data=my_data, family = nb)
+
+c4= gam(ToTFalcon ~ offset(log(Duration)) + Num_Obs  + Temp*Precipitation2  + Temp*GrpMonth 
+        + PathAgr*GrpMonth 
+        , data=my_data, family = nb)
+
+c5= gam(ToTFalcon ~ offset(log(Duration)) + Num_Obs   + Temp*PathAgr + Temp*GrpMonth 
+        + PathAgr*GrpMonth 
+        , data=my_data, family = nb)
+
+c6= gam(ToTFalcon ~ offset(log(Duration))  + Temp*Precipitation2 + Temp*PathAgr + Temp*GrpMonth 
+        + PathAgr*GrpMonth 
+        , data=my_data, family = nb)
+
+
+
+aic.vec<-(c(AIC(c1),AIC(c2), AIC(c3), AIC(c4), AIC(c5),AIC(c6)))
+
+plot(aic.vec)  
+which.min(aic.vec)
+
+
+#k1= gam(ToTFalcon ~ offset(log(Duration))  +Num_Obs + Temp*Precipitation2 + Temp 
+#        + PathAgr  + Humidity 
+#        , data=my_data, family = nb)
+
+
+#c4= gam(ToTFalcon ~ offset(log(Duration)) + s(Num_Obs,bs="re")   + Temp + Precipitation2   
+#        + PathAgr    
+#        , data=my_data, family = nb)
+
+
+
+falcon_raptor= gam(ToTFalcon ~ offset(log(Duration)) + Num_Obs   + s(Temp) + Precipitation2 + PathAgr  + s(Humidity)
+        + WindS 
+        , data=my_data, family = nb)
+
+
+q1 = falcon_raptor
+
+AIC(q1)
+summary(q1)
+
+par(mfrow=c(2,2))
+plot(predict(q1,type="response"),residuals(q1), main="a")
+plot(predict(q1,type="response"),q1$y, main="b");abline(0,1,col=2)
+plot(q1$linear.predictors,q1$y, main="c")
+qq.gam(q1,rep=100,level=1, main="d")
+
+
+fit1 <- brm(ToTFalcon ~ offset(log(Duration)) + Num_Obs   + s(Temp) + Precipitation2 + PathAgr  + s(Humidity)
+            ,data = my_data, family = negbinomial(),
+            warmup = 1000, iter = 4000, chains = 2,cores=4,control=list(max_treedepth=12))
+
+
+nzeros<-numeric()
+b<- fit1 # q7
+for (i in 1:500){
+  #simcounts <- rpois(1226,predict(b,type="response"))
+  simcounts<-rnbinom(n=1226,size=0.7,mu=predict(b,type="response")) # simulate from poisson distribution using fitted values
+  nzeros<-c(nzeros, sum(simcounts==0))
+}
+hist(nzeros,main="Histogram of zero counts"); mean(nzeros); sum(my_data$ToTFalcon==0)
+
+abline(v=1115,lwd=3,col="red")
+
+
+
+msms <- conditional_smooths(fit1)
+
+
+
+
+
+
+
+
+
+######LASSO LOGISTIC REGRESSION FOR CLASSIFICATION ABSENT OR EXISTANCE OF BIRD, also a sense of features selection
+
+library(glmnet)
+
+# Find the best lambda using cross-validation
+set.seed(123) 
+
+dedodmena = my_data
+dedodmena$y = ifelse(dedodmena$ToTFalcon > 0 , 1, 0)  #each time change ToTFalcon to TOTAL or ToTHawk
+
+
+greg=c()
+greg$GrpMonth = my_data$GrpMonth
+greg$Temp=my_data$Temp
+greg$WindSp2=my_data$WindS
+greg$Humidity=my_data$Humidity
+greg$CloudCover=my_data$CloudCover
+greg$Visibility=my_data$Visibility
+greg$Precipitation2=my_data$Precipitation2
+greg$BARO=my_data$BARO
+greg$PathAgr=my_data$PathAgr
+greg$Num_Obs=my_data$Num_Obs
+greg$Whole=my_data$Whole
+greg=as.data.frame(greg)
+
+x_train <- model.matrix( ~ .-1, greg)
+
+## 75% of the sample size
+smp_size <- floor(0.75 * nrow(my_data))
+
+## set the seed to make your partition reproducible
+train_ind <- sample(seq_len(nrow(my_data)), size = smp_size)
+
+y=dedodmena$y
+
+
+cv.lasso <- cv.glmnet(x_train[train_ind,], y[train_ind], alpha = 1, family = "binomial")
+# Fit the final model on the training data
+model <- glmnet(x_train[train_ind,], y[train_ind], alpha = 1, family = "binomial",
+                lambda =  0.03258 )
+# Display regression coefficients
+coef(model)
+# Make predictions on the test data
+x.test <- model.matrix( ~ .-1, test)
+probabilities <- model %>% predict(newx = x.test)
+predicted.classes <- ifelse(probabilities > 0.5, 1,        0)
+# Model accuracy
+observed.classes <- y[-train_ind]
+mean(predicted.classes == observed.classes)
+
+
